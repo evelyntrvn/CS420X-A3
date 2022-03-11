@@ -34,6 +34,7 @@
     uniform float dB;
     uniform float feed;
     uniform float kill;
+    uniform float size;
 
     // simulation texture state, swapped each frame
     uniform sampler2D state;
@@ -47,7 +48,7 @@
 
     float getB(int x, int y) {
         return float( 
-          texture2D( state, ( gl_FragCoord.xy + vec2(x, y) ) / resolution ).a 
+          texture2D( state, ( gl_FragCoord.xy + vec2(x, y) ) / resolution ).g 
         );
     }
   
@@ -87,21 +88,19 @@
         float a = getA(0,0);
         float b = getB(0,0);
 
-        float red = a + 
-                    (dA * laplaceA() * 1. 
+        float nextA = a + 
+                    (dA * laplaceA() * size 
                     - a * b * b 
-                    - (kill + feed) * b) ;
+                    + feed * ( 1. - a )) ;
         
-        float blue = b + 
-                    (dB * laplaceB() * 1.
-                    - a * b * b 
-                    + feed * ( 1. - a ));
+        float nextB = b + 
+                    (dB * laplaceB() * size
+                    + a * b * b 
+                    - (kill + feed) * b);
 
-        vec3 next = vec3(red, red, red);
-        vec3 cur = texture2D( state, ( gl_FragCoord.xy + vec2(0, 0) ) / resolution ).rgb;
-
-        //gl_FragColor = vec4(mix(cur,next, 0.02), 1.);
-        gl_FragColor = vec4(next, blue);
+        vec3 next = vec3(nextA, nextB, 0);
+        
+        gl_FragColor = vec4(next, 1.);
 
     }
   </script>
@@ -128,15 +127,16 @@
         uTime, uSimulationState,
         textureBack, textureFront,
         dimensions = { width: null, height: null },
-        dA, dB, feed, k
+        dA, dB, feed, k, size
 
     window.onload = function () {
         const pane = new Tweakpane.Pane();
         const PARAMS = {
             dA: 1,
-            dB: 1,
-            feed: 0.005,
-            kill: 0.0003        }
+            dB: 0.1,
+            feed: 0.055,
+            kill: 0.065,
+            size: 0.5        }
 
         const dAInput = pane.addInput(
             PARAMS, 'dA',
@@ -154,10 +154,14 @@
             PARAMS, 'kill',
             { min: 0, max: 0.1 }
         )
+        const sizeInput = pane.addInput(
+            PARAMS, 'size',
+            { min: 0, max: 1 }
+        )
 
         dAInput.on('change', function (ev) {
             dA = ev.value
-            console.log("da= " + ev.value)
+            // console.log("da= " + ev.value)
         })
         dBInput.on('change', function (ev) {
             dB = ev.value
@@ -168,11 +172,15 @@
         killInput.on('change', function (ev) {
             kill = ev.value
         })
-        
+        sizeInput.on('change', function (ev) {
+            size = ev.value
+        })
+
         dA = PARAMS['dA']
         dB = PARAMS['dB']
         feed = PARAMS['feed']
         kill = PARAMS['kill']
+        size = PARAMS['size']
 
         const canvas = document.getElementById('gl')
         gl = canvas.getContext('webgl')
@@ -187,24 +195,9 @@
         makeShaders()
         makeTextures()
         setInitialState()
-        
     }
 
-    const pingpong = function() {
-      gl.bindFramebuffer( gl.FRAMEBUFFER, framebuffer1 ) 
-      gl.framebufferTexture2D( gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, textureFront, 0 ) 
-
-      gl.bindTexture( gl.TEXTURE_2D, textureBack )
-      gl.drawArrays( gl.TRIANGLES, 0, 6 ) 
-
-      gl.bindFramebuffer( gl.FRAMEBUFFER, framebuffer2 )
-      gl.framebufferTexture2D( gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, textureBack, 0 )
-    
-      gl.bindTexture( gl.TEXTURE_2D, textureFront ) 
-      gl.drawArrays( gl.TRIANGLES, 0, 6 ) 
-    }
-
-    function poke(x, y, value, texture) {
+    function poke(x, y, valA, valB, texture) {
         gl.bindTexture(gl.TEXTURE_2D, texture)
         gl.texSubImage2D(
             gl.TEXTURE_2D, 0,
@@ -212,7 +205,7 @@
             x, y, 1, 1,
             gl.RGBA, gl.UNSIGNED_BYTE,
             // is supposed to be a typed array
-            new Uint8Array([value, value, value, 1])
+            new Uint8Array([valA, valB, 0, 1])
         )
     }
 
@@ -224,10 +217,10 @@
             for (j = 0; j < height; j++) {
                 if (i > width / 2.2 && j > height / 2.2
                     && i < width - (width / 2.2) && j < height - (height / 2.2)) {
-                    poke(i, j, 0, textureBack)
+                    poke(i, j, 0, 255, textureBack)
                 }
                 else {
-                    poke(i, j, 255, textureBack)
+                    poke(i, j, 255, 0, textureBack)
                 }
             }
         }
@@ -315,6 +308,7 @@
         uDB = gl.getUniformLocation(simulationProgram, 'dB')
         uFeed = gl.getUniformLocation(simulationProgram, 'feed')
         uKill = gl.getUniformLocation(simulationProgram, 'kill')
+        uSize = gl.getUniformLocation(simulationProgram, 'size')
 
         //uSimulationState = gl.getUniformLocation( simulationProgram, 'state' )
 
@@ -351,8 +345,6 @@
 
         // Create a framebuffer and attach the texture.
         framebuffer = gl.createFramebuffer()
-        framebuffer1 = gl.createFramebuffer()
-        framebuffer2 = gl.createFramebuffer()
 
         render()
 
@@ -374,6 +366,7 @@
         gl.uniform1f(uDB, dB)
         gl.uniform1f(uFeed, feed)
         gl.uniform1f(uKill, kill)
+        gl.uniform1f(uSize, size)
 
         // for( let i = 0; i < 4; i++ ) pingpong()
 
